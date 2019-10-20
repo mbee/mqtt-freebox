@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
-	"time"
+	"strings"
+
+	"./freebox"
 
 	log "github.com/Sirupsen/logrus"
-	"github.com/juju2013/go-freebox"
 	"github.com/yosssi/gmq/mqtt"
 	"github.com/yosssi/gmq/mqtt/client"
 )
@@ -19,11 +22,13 @@ var fbx *freebox.Client
 var cli *client.Client
 var sigc chan os.Signal
 
-const TOP_JOIN     = "landline/mqtt-free"
-const TOP_FRIEND   = "landline/gaston"
-const TOP_STRANGER = "landline/eggbacon"
-
-var SMS_LOGIN, SMS_PASS string
+var (
+	smsLogin     string
+	smsPass      string
+	mqttURL      string
+	mqttLogin    string
+	mqttPassword string
+)
 
 func main() {
 	// Set up channel on which to send signal notifications.
@@ -32,41 +37,55 @@ func main() {
 	if os.Getenv("DEBUG") != "" {
 		log.SetLevel(log.DebugLevel)
 	}
-	SMS_LOGIN = os.Getenv("GOFBX_SMS_LOGIN")
-	SMS_PASS = os.Getenv("GOFBX_SMS_PASS")
+	smsLogin = os.Getenv("GOFBX_SMS_LOGIN")
+	smsPass = os.Getenv("GOFBX_SMS_PASS")
+	mqttURL = os.Getenv("GOFBX_MQTT_URL")
+	mqttLogin = os.Getenv("GOFBX_MQTT_LOGIN")
+	mqttPassword = os.Getenv("GOFBX_MQTT_PASSWORD")
 
 	initMqtt()
 	log.Info("Mqtt ... OK")
 	defer cli.Terminate()
-	publish(TOP_JOIN, "join")
 
 	initFreebox()
 
-	// Wait for receiving a signal.
-	log.Info("Initialized, going to main loop")
-Loop:
-	for {
-		// new call ?
-		caller, new := checkCall()
-		if new {
-			log.WithFields(log.Fields{"who": caller.Name, "when": caller.Datetime}).Info("New call")
-			if caller.ContactID > 0 {
-				publish(TOP_FRIEND, caller.Name)
-				notifySMS(caller.Name)
-			} else {
-				publish(TOP_STRANGER, caller.Number)
-      }
-			fbx.MarkRead(caller.ID)
-		}
-		// continue or stop ?
-		select {
-		case <-sigc:
-			log.Info("Exiting...")
-			break Loop
-		default:
-			time.Sleep(time.Second)
-		}
+	// Subscribe to topics.
+	err := cli.Subscribe(&client.SubscribeOptions{
+		SubReqs: []*client.SubReq{
+			&client.SubReq{
+				TopicFilter: []byte("mqtt-freebox/get/host/#"),
+				QoS:         mqtt.QoS0,
+				// Define the processing of the message handler.
+				Handler: func(topicName, message []byte) {
+					deviceID := strings.Split(string(topicName), "/")[3]
+
+					log.Info("get info for device: " + deviceID)
+					lanhost, err := fbx.GetLanHost(deviceID)
+					if err != nil {
+						log.Error(err)
+						return
+					}
+
+					log.Info("publishing mqtt-freebox/status/host/" + lanhost.ID)
+					payload := new(bytes.Buffer)
+					encoder := json.NewEncoder(payload)
+					if err := encoder.Encode(lanhost); err != nil {
+						log.Error(err)
+						return
+					}
+					payloadString := strings.TrimSpace(fmt.Sprintf("%s", payload))
+					publish("mqtt-freebox/status/host/"+lanhost.ID, payloadString)
+
+				},
+			},
+		},
+	})
+
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	<-sigc
 
 	// Disconnect the Network Connection.
 	if err := cli.Disconnect(); err != nil {
@@ -85,7 +104,9 @@ func initMqtt() {
 	// Connect to the MQTT Server.
 	err := cli.Connect(&client.ConnectOptions{
 		Network:  "tcp",
-		Address:  "192.168.88.2:1883",
+		Address:  mqttURL,
+		UserName: []byte(mqttLogin),
+		Password: []byte(mqttPassword),
 		ClientID: []byte("mqtt-freebox"),
 	})
 	if err != nil {
@@ -143,13 +164,13 @@ func checkCall() (*freebox.CallEntry, bool) {
 
 // notify by sms
 func notifySMS(msg string) {
-	if (SMS_LOGIN == "") || (SMS_PASS) == "" {
+	if (smsLogin == "") || (smsPass) == "" {
 		return
 	}
 
 	data := url.Values{
-		"user": {SMS_LOGIN},
-		"pass": {SMS_PASS},
+		"user": {smsLogin},
+		"pass": {smsPass},
 		"msg":  {msg}}
 	response, err := http.Get("https://smsapi.free-mobile.fr/sendmsg?" + data.Encode())
 	fmt.Printf("DEBUG:data=%v", data.Encode())
