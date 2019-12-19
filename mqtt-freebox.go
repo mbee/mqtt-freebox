@@ -19,13 +19,12 @@ var cli *client.Client
 var sigc chan os.Signal
 
 var (
-	MQTT_URL      string
-	MQTT_LOGIN    string
-	MQTT_PASSWORD string
+	mqttURL      string
+	mqttLogin    string
+	mqttPassword string
 )
 
-// LanHost
-type LanHost struct {
+type lanHost struct {
 	L2Ident struct {
 		ID   string `json:"id"`
 		Type string `json:"type"`
@@ -52,15 +51,15 @@ type LanHost struct {
 }
 
 // Get all lan hosts
-func GetLanHosts(c *freebox.Client) ([]LanHost, error) {
-	payload := []LanHost{}
+func getLanHosts(c *freebox.Client) ([]lanHost, error) {
+	payload := []lanHost{}
 	err := c.GetResult("lan/browser/pub/", &payload)
 	return payload, err
 }
 
 // Get a contact
-func GetLanHost(c *freebox.Client, name string) (LanHost, error) {
-	payload := LanHost{}
+func getLanHost(c *freebox.Client, name string) (lanHost, error) {
+	payload := lanHost{}
 	err := c.GetResult(fmt.Sprintf("lan/browser/pub/%s", name), &payload)
 	return payload, err
 }
@@ -76,10 +75,10 @@ func initMqtt() {
 	// Connect to the MQTT Server.
 	err := cli.Connect(&client.ConnectOptions{
 		Network:  "tcp",
-		Address:  MQTT_URL,
-		UserName: []byte(MQTT_LOGIN),
-		Password: []byte(MQTT_PASSWORD),
-		ClientID: []byte("mqtt-freebox"),
+		Address:  mqttURL,
+		UserName: []byte(mqttLogin),
+		Password: []byte(mqttPassword),
+		ClientID: []byte("mqtt-freebox2"),
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -127,9 +126,9 @@ func main() {
 	if os.Getenv("DEBUG") != "" {
 		log.SetLevel(log.DebugLevel)
 	}
-	MQTT_URL = os.Getenv("GOFBX_MQTT_URL")
-	MQTT_LOGIN = os.Getenv("GOFBX_MQTT_LOGIN")
-	MQTT_PASSWORD = os.Getenv("GOFBX_MQTT_PASSWORD")
+	mqttURL = os.Getenv("GOFBX_MQTT_URL")
+	mqttLogin = os.Getenv("GOFBX_MQTT_LOGIN")
+	mqttPassword = os.Getenv("GOFBX_MQTT_PASSWORD")
 
 	initMqtt()
 	log.Info("Mqtt ... OK")
@@ -145,10 +144,10 @@ func main() {
 				QoS:         mqtt.QoS0,
 				// Define the processing of the message handler.
 				Handler: func(topicName, message []byte) {
-					device_id := strings.Split(string(topicName), "/")[3]
+					deviceID := strings.Split(string(topicName), "/")[3]
 
-					log.Info("get info for device: " + device_id)
-					lanhost, err := GetLanHost(fbx, device_id)
+					log.Info("get info for device: " + deviceID)
+					lanhost, err := getLanHost(fbx, deviceID)
 					if err != nil {
 						log.Error(err)
 						return
